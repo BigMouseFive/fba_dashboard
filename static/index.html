@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FBA 订单数据对比看板</title>
+<link rel="stylesheet" href="/static/css/app.css">
+<script>
+  // 早期错误捕获：挂载失败时页面不会静默空白
+  window.__errs = [];
+  window.addEventListener('error', function (e) {
+    window.__errs.push(String((e.error && e.error.stack) || e.message || e));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    window.__errs.push('rejection: ' + String((e.reason && e.reason.stack) || e.reason));
+  });
+</script>
+</head>
+<body>
+
+<div id="app"></div>
+
+<!-- ==================== 模板 ==================== -->
+<script type="text/x-template" id="tpl">
+
+<div class="shell">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div>
+      <h1>FBA 订单数据对比看板</h1>
+      <div class="sub">
+        <template v-if="meta.dates.length">
+          累计 <b>{{ fmt(meta.dates.length) }}</b> 天数据 · {{ meta.first }} 至 {{ meta.latest }}
+          · 运营 {{ meta.operator_count }} 人 / 团队 {{ meta.team_count }} 个
+        </template>
+        <template v-else-if="loadError">数据读取失败，点下方「重新加载」</template>
+        <template v-else-if="loading">正在读取数据…</template>
+        <template v-else>尚未导入任何订单文件</template>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" @click="showImport = true">
+        <icon name="upload" />导入数据
+      </button>
+      <button class="btn btn-primary" @click="exportCsv('operators')">
+        <icon name="download" />导出本轮运营榜
+      </button>
+    </div>
+  </header>
+
+  <!-- 筛选 -->
+  <section class="filters">
+    <div class="seg">
+      <button v-for="m in modes" :key="m.key" :class="{ on: mode === m.key }" @click="mode = m.key">{{ m.label }}</button>
+    </div>
+
+    <div class="field" v-if="mode === 'day' || mode === 'week'">
+      <span>日期</span>
+      <input type="date" v-model="day">
+    </div>
+
+    <div class="field" v-if="mode === 'month'">
+      <span>月份</span>
+      <input type="month" v-model="month">
+    </div>
+
+    <div class="field" v-if="mode === 'custom'">
+      <span>从</span>
+      <input type="date" v-model="start">
+      <span>到</span>
+      <input type="date" v-model="end">
+    </div>
+
+    <button class="btn btn-ghost" v-if="meta.latest" @click="day = meta.latest; mode = 'day'">
+      <icon name="bolt" />跳到最新一天
+    </button>
+
+    <div class="spacer"></div>
+    <div class="freshness" v-if="summary">
+      <icon name="clock" />
+      当前口径：{{ rangeLabel }}，对比 {{ summary.compare.label }}
+    </div>
+  </section>
+
+  <!-- KPI -->
+  <section class="kpis" v-if="summary">
+    <div class="kpi">
+      <div class="label"><icon name="grid" />本期总商品数</div>
+      <div class="value">{{ fmt(summary.totals.qty) }}<span class="unit">件</span></div>
+      <div class="foot">
+        <span>{{ fmt(summary.totals.orders) }} 个订单行 · 日均 {{ fmt(summary.totals.qty / summary.range.days) }}</span>
+      </div>
+    </div>
+
+    <div class="kpi">
+      <div class="label"><icon name="clock" />上期总商品数</div>
+      <div class="value">{{ fmt(summary.prev.qty) }}<span class="unit">件</span></div>
+      <div class="foot">口径：{{ summary.compare.label }}</div>
+    </div>
+
+    <div class="kpi">
+      <div class="label"><icon name="trend" />环比变化</div>
+      <div class="value">
+        <span :class="['trend-pill', summary.delta.qty_pct > 0 ? 'up' : summary.delta.qty_pct < 0 ? 'down' : 'flat']">
+          {{ pctText(summary.delta.qty_pct) }}
+        </span>
+      </div>
+      <div class="foot">
+        差值 {{ fmtSigned(summary.delta.qty) }} 件 · 订单数 {{ pctText(summary.delta.orders_pct) }}
+      </div>
+    </div>
+
+    <div class="kpi highlight">
+      <div class="label"><icon name="globe" />大盘主要变动来源</div>
+      <div class="value" style="font-size:22px;letter-spacing:-.3px">
+        <template v-if="summary.main_mover">
+          {{ summary.main_mover.label }} <span :class="summary.main_mover.qty - summary.main_mover.prev_qty >= 0 ? 'delta-up' : 'delta-down'">
+            ({{ fmtSigned(summary.main_mover.qty - summary.main_mover.prev_qty) }})
+          </span>
+        </template>
+        <template v-else>暂无对比数据</template>
+      </div>
+      <div class="foot">
+        <template v-for="c in summary.by_country" :key="c.country">
+          <span class="tag" :class="c.country === 'UAE' ? 'blue' : 'green'">
+            {{ c.country === 'UAE' ? '阿联酋' : '沙特' }} {{ fmt(c.qty) }} · {{ c.share }}%
+          </span>
+        </template>
+      </div>
+    </div>
+  </section>
+
+  <!-- 团队环 + 国家占比条 -->
+  <section class="grid-2" v-if="summary">
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title"><icon name="users" />各团队单量占比</div>
+        <div class="toolbar">
+          <div class="seg seg-sm">
+            <button v-for="s in teamScopes" :key="s.key"
+                    :class="{ on: teamScope === s.key }"
+                    @click="teamScope = s.key">{{ s.label }}</button>
+          </div>
+        </div>
+      </div>
+      <div class="card-body">
+        <chart :option="teamChart" :height="300" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title"><icon name="globe" />站点结构</div>
+        <span class="hint">阿联酋 / 沙特</span>
+      </div>
+      <div class="card-body country-bars">
+        <div class="cb-total">
+          <span class="cb-num">{{ fmt(summary.totals.qty) }}</span>
+          <span class="cb-unit">总件数</span>
+        </div>
+
+        <div v-for="c in countries" :key="c.country" class="cb-row">
+          <div class="cb-head">
+            <span class="cb-name">
+              <i :class="['cb-dot', c.country === 'UAE' ? 'uae' : 'ksa']"></i>
+              {{ c.country === 'UAE' ? '阿联酋 UAE' : '沙特 KSA' }}
+            </span>
+            <span class="cb-vals">
+              <b>{{ fmt(c.qty) }}</b> 件
+              <em>{{ c.share }}%</em>
+            </span>
+          </div>
+          <div class="cb-track">
+            <div :class="['cb-fill', c.country === 'UAE' ? 'uae' : 'ksa']"
+                 :style="{ width: c.share + '%' }"></div>
+          </div>
+          <div class="cb-foot">
+            <span :class="['trend-pill', c.delta_pct > 0 ? 'up' : c.delta_pct < 0 ? 'down' : 'flat']">
+              {{ pctText(c.delta_pct) }}
+            </span>
+            <span class="hint">上期 {{ fmt(c.prev_qty) }} 件</span>
+          </div>
+        </div>
+
+        <div class="cb-note">
+          大盘环比
+          <b :class="summary.delta.qty_pct >= 0 ? 'delta-up' : 'delta-down'">
+            {{ pctText(summary.delta.qty_pct) }}
+          </b>
+          · 主要变化 {{ summary.main_mover ? summary.main_mover.label : '—' }}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 团队 PK 表 -->
+  <section class="card" style="margin-top:16px" v-if="summary">
+    <div class="card-head">
+      <div class="card-title"><icon name="trophy" />团队整体表现对比 · PK 榜</div>
+      <div class="toolbar">
+        <div class="seg seg-sm">
+          <button :class="{ on: teamMetric === 'total' }" @click="teamMetric = 'total'">总量</button>
+          <button :class="{ on: teamMetric === 'percap' }" @click="teamMetric = 'percap'">人均</button>
+        </div>
+        <div class="seg seg-sm">
+          <button v-for="s in teamScopes" :key="s.key"
+                  :class="{ on: teamScope === s.key }"
+                  @click="teamScope = s.key">{{ s.label }}</button>
+        </div>
+        <span class="hint" style="min-width:118px;text-align:right">
+          <template v-if="teamMetric === 'percap'">
+            {{ summary.team_operators || 0 }} 人 · 均 {{ fmt((summary.team_total || 0) / (summary.team_operators || 1)) }} 件
+          </template>
+          <template v-else>合计 {{ fmt(summary.team_total || 0) }} 件</template>
+        </span>
+        <button class="btn btn-ghost" @click="exportCsv('teams')"><icon name="download" />导出</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="pk-list">
+        <div class="pk-row pk-row-wide" v-for="(t, i) in teamRank" :key="t.team">
+          <div :class="['rank-badge', rankClass(i)]">{{ t.rank }}</div>
+          <div class="pk-name" :title="t.team">{{ t.team }}</div>
+          <div class="pk-track">
+            <div class="pk-fill"
+                 :style="{ width: Math.max(2, t.metric / teamRank[0].metric * 100) + '%' }"></div>
+          </div>
+          <div class="pk-sub">{{ t.operators }} 人</div>
+          <div class="pk-val">
+            {{ fmt(t.metric) }}
+            <span v-if="teamMetric === 'percap'" class="pk-unit">件/人</span>
+          </div>
+          <div class="pk-delta">
+            <span :class="['trend-pill', t.delta_pct > 0 ? 'up' : t.delta_pct < 0 ? 'down' : 'flat']">
+              {{ pctText(t.delta_pct) }}
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:10px">
+        <template v-if="teamMetric === 'percap'">
+          人均 = 团队总件数 ÷ 团队出单人数，可横向比较团队规模差异；名次会与总量榜不同。
+        </template>
+        <template v-else>
+          切到「人均」可比较不同人数团队的真实产出效率。
+        </template>
+      </div>
+    </div>
+  </section>
+
+  <!-- 运营榜 -->
+  <section class="card" style="margin-top:16px" v-if="board">
+    <div class="card-head">
+      <div class="card-title"><icon name="users" />运营单量榜</div>
+      <div class="toolbar">
+        <div class="seg">
+          <button v-for="s in scopes" :key="s.key" :class="{ on: scope === s.key }" @click="scope = s.key">{{ s.label }}</button>
+        </div>
+        <input class="search" v-model="keyword" placeholder="搜索代号 / 姓名 / 团队">
+        <button class="btn btn-ghost" @click="exportCsv('operators')"><icon name="download" />导出</button>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <!-- 前三名 -->
+      <div class="podium" v-if="podium.length === 3">
+        <div class="podium-card gold">
+          <div class="crown">第 1 名</div>
+          <div class="who">{{ podium[0].code }}</div>
+          <div class="team">{{ podium[0].name }} · {{ podium[0].team }}</div>
+          <div class="qty">{{ fmt(podium[0].qty) }}</div>
+          <div class="meta">
+            <span>UAE {{ fmt(podium[0].uae) }}</span><span>KSA {{ fmt(podium[0].ksa) }}</span>
+          </div>
+        </div>
+        <div class="podium-card silver">
+          <div class="who">{{ podium[1].code }}</div>
+          <div class="team">{{ podium[1].name }} · {{ podium[1].team }}</div>
+          <div class="qty">{{ fmt(podium[1].qty) }}</div>
+          <div class="meta">
+            <span>UAE {{ fmt(podium[1].uae) }}</span><span>KSA {{ fmt(podium[1].ksa) }}</span>
+          </div>
+        </div>
+        <div class="podium-card bronze">
+          <div class="who">{{ podium[2].code }}</div>
+          <div class="team">{{ podium[2].name }} · {{ podium[2].team }}</div>
+          <div class="qty">{{ fmt(podium[2].qty) }}</div>
+          <div class="meta">
+            <span>UAE {{ fmt(podium[2].uae) }}</span><span>KSA {{ fmt(podium[2].ksa) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="board.threshold > 0" class="anomaly-note">
+        <span class="dot"></span>
+        增减超过 <b>±{{ board.threshold }}</b> 件的运营高亮显示 · 口径：{{ board.scope_label }}
+      </div>
+
+      <chart :option="topChart" :height="300" style="margin-top:8px" />
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:96px">名次 <span class="th-tip">▲升 ▼降</span></th>
+            <th>运营</th>
+            <th>团队</th>
+            <th class="num">总量</th>
+            <th class="num" style="width:78px">阿联酋</th>
+            <th class="num" style="width:78px">沙特</th>
+            <th class="num" style="width:76px">上期</th>
+            <th class="num" style="width:86px">环比</th>
+            <th class="num" style="width:76px">差值</th>
+            <th>主要增减国家</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="it in filteredOps" :key="it.code" :class="{ 'row-anomaly': it.is_anomaly }" @click="openDetail(it)">
+            <td>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span :class="['rank-badge', it.rank <= 3 ? rankClass(it.rank - 1) : '']">{{ it.rank }}</span>
+                <span v-if="it.rank_prev == null" class="rank-move flat">new</span>
+                <span v-else-if="it.rank_delta > 0" class="rank-move up">▲{{ it.rank_delta }}</span>
+                <span v-else-if="it.rank_delta < 0" class="rank-move down">▼{{ -it.rank_delta }}</span>
+                <span v-else class="rank-move flat">—</span>
+              </div>
+            </td>
+            <td>
+              <div class="op-cell">
+                <div class="avatar">{{ it.code.slice(0, 2) }}</div>
+                <div>
+                  <div style="font-weight:600">{{ it.code }}</div>
+                  <div style="color:#8d94a6;font-size:12px">{{ it.name }}</div>
+                </div>
+              </div>
+            </td>
+            <td><span class="tag">{{ it.team }}</span></td>
+            <td class="num" style="font-weight:650">{{ fmt(it.qty) }}</td>
+            <td class="num" style="color:#2f7cf6">{{ fmt(it.uae) }}</td>
+            <td class="num" style="color:#0f9d7a">{{ fmt(it.ksa) }}</td>
+            <td class="num" style="color:#8d94a6">{{ fmt(it.prev_qty) }}</td>
+            <td class="num">
+              <span :class="['trend-pill', it.delta_pct > 0 ? 'up' : it.delta_pct < 0 ? 'down' : 'flat']">
+                {{ pctText(it.delta_pct) }}
+              </span>
+            </td>
+            <td class="num" :style="{ color: it.delta > 0 ? '#0f9d58' : it.delta < 0 ? '#d93a3a' : '#8d94a6', fontWeight: 600 }">
+              {{ fmtSigned(it.delta) }}
+            </td>
+            <td>
+              <span class="tag" :class="it.main_move.country === 'UAE' ? 'blue' : 'green'">
+                {{ it.main_move.label }} ({{ fmtSigned(it.main_move.delta) }})
+              </span>
+            </td>
+          </tr>
+          <tr v-if="!filteredOps.length">
+            <td colspan="10">
+              <div class="empty"><div class="t">没有匹配的运营</div>换个关键词或切换站点口径试试</div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:14px;border-top:1px solid var(--line-soft)">
+        <span class="hint" v-if="hiddenCount">还有 {{ hiddenCount }} 位运营未显示</span>
+        <span class="hint" v-else>已显示全部 {{ allFiltered.length }} 位运营</span>
+        <button class="btn" v-if="hiddenCount" @click="showAllOps = true">展开全部</button>
+        <button class="btn" v-else-if="allFiltered.length > pageSize" @click="showAllOps = false">收起</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 趋势 + 时段 -->
+  <section class="grid-2" v-if="summary">
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title"><icon name="trend" />单量走势（近 14 天）</div>
+        <button class="btn btn-ghost" @click="exportCsv('daily')"><icon name="download" />导出</button>
+      </div>
+      <div class="card-body"><chart :option="dailyChart" :height="280" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title"><icon name="clock" />24 小时时段分布</div>
+        <span class="hint">按付款时间 · 阿联酋 / 沙特</span>
+      </div>
+      <div class="card-body"><chart :option="hourChart" :height="280" /></div>
+    </div>
+  </section>
+
+  <!-- 导入弹窗 -->
+  <div v-if="showImport" class="modal-mask" @click.self="showImport = false" @keydown.esc="showImport = false">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="导入数据">
+      <div class="modal-head">
+        <div class="card-title"><icon name="upload" />导入数据</div>
+        <button class="modal-x" @click="showImport = false" aria-label="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M6 6l12 12M18 6L6 18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <div class="drop-grid">
+          <div class="drop" :class="{ over: dragging }"
+               @click="pick('orders')"
+               @dragover.prevent="dragging = true"
+               @dragleave.prevent="dragging = false"
+               @drop.prevent="onDrop">
+            <icon name="grid" />
+            <div class="big">{{ uploading ? '正在导入…' : '点击或拖入 FBA 订单表' }}</div>
+            <div class="sm">形如 <code>20261027 FBA订单.xlsx</code>，可多选</div>
+          </div>
+
+          <div class="drop" @click="pick('operators')">
+            <icon name="users" />
+            <div class="big">更新运营代号记录</div>
+            <div class="sm">形如 <code>运营代号记录.xlsx</code></div>
+          </div>
+        </div>
+
+        <div class="import-note">
+          只读取订单文件的<b>主表</b>，按「商品数量」求和；同一业务日期重复导入会整日覆盖，不会翻倍累计。
+        </div>
+
+        <div class="modal-sub" v-if="meta.batches.length">最近导入</div>
+        <div class="import-log" v-if="meta.batches.length">
+          <div class="log-row" v-for="b in meta.batches" :key="b.id">
+            <span class="ok">✓</span>
+            <b v-if="b.kind === 'orders'">{{ b.biz_date }}</b>
+            <b v-else>运营映射</b>
+            <span style="color:#5b6274">{{ b.filename }}</span>
+            <span style="color:#8d94a6" v-if="b.kind === 'orders'">{{ fmt(b.rows) }} 行 / {{ fmt(b.qty) }} 件 / {{ b.shops }} 店铺 / {{ b.operators }} 运营</span>
+            <span style="color:#8d94a6" v-else>{{ b.rows }} 条</span>
+            <div style="flex:1"></div>
+            <span style="color:#8d94a6">{{ b.imported_at }}</span>
+          </div>
+        </div>
+        <div class="empty" v-else style="padding:22px 0">
+          <div class="t">还没有导入记录</div>
+          先上传一份订单表和运营代号记录
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 加载失败 -->
+  <section class="card" style="margin-top:16px" v-if="loadError && !summary">
+    <div class="empty">
+      <div class="t">数据没有加载出来</div>
+      <div style="max-width:520px;margin:0 auto">{{ loadError }}</div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:center">
+        <button class="btn btn-primary" @click="retry">重新加载</button>
+        <button class="btn" @click="showImport = true">导入数据</button>
+      </div>
+      <div class="hint" style="margin-top:14px">如果一直失败，检查服务是否在运行：<code>launchctl print gui/$(id -u)/com.wenwendemac.fba-dashboard</code></div>
+    </div>
+  </section>
+
+  <!-- 空状态 -->
+  <section class="card" style="margin-top:16px" v-if="!loading && summary && !summary.totals.qty">
+    <div class="empty">
+      <div class="t">还没有订单数据</div>
+      点击右上角「导入数据」，上传当天的 FBA 订单 Excel，再上传一次运营代号记录即可开始对比。
+      <div style="margin-top:16px">
+        <button class="btn btn-primary" @click="showImport = true">去导入</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 明细抽屉 -->
+  <div v-if="detail" class="drawer-mask" @click.self="closeDetail">
+    <div class="drawer">
+      <div class="card-head">
+        <div class="card-title"><icon name="users" />{{ detail.code }} · {{ detail.name }}</div>
+        <button class="btn btn-ghost" @click="closeDetail">关闭</button>
+      </div>
+      <div class="card-body">
+        <div class="kpis" style="grid-template-columns:repeat(2,1fr);margin-top:0">
+          <div class="kpi" style="padding:14px 16px">
+            <div class="label">本期总量</div>
+            <div class="value" style="font-size:26px">{{ fmt(detail.qty) }}</div>
+          </div>
+          <div class="kpi" style="padding:14px 16px">
+            <div class="label">环比</div>
+            <div class="value" style="font-size:26px">{{ pctText(detail.delta_pct) }}</div>
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <span class="tag">{{ detail.team }}</span>
+          <span class="tag blue">阿联酋 {{ fmt(detail.uae) }}</span>
+          <span class="tag green">沙特 {{ fmt(detail.ksa) }}</span>
+        </div>
+
+        <div style="margin-top:18px;font-weight:650;font-size:14px">每日明细</div>
+        <table style="margin-top:8px">
+          <thead>
+            <tr><th>日期</th><th class="num">总量</th><th class="num">阿联酋</th><th class="num">沙特</th><th class="num">日环比</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="d in detail.items" :key="d.biz_date">
+              <td>{{ d.biz_date }}</td>
+              <td class="num" style="font-weight:600">{{ fmt(d.qty) }}</td>
+              <td class="num" style="color:#2f7cf6">{{ fmt(d.uae) }}</td>
+              <td class="num" style="color:#0f9d7a">{{ fmt(d.ksa) }}</td>
+              <td class="num" style="color:#8d94a6">{{ d.delta === null ? '—' : fmtSigned(d.delta) }}</td>
+            </tr>
+            <tr v-if="detail.loading"><td colspan="5" style="color:#8d94a6">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toasts">
+    <div v-for="t in toasts" :key="t.id" :class="['toast', t.kind]">{{ t.msg }}</div>
+  </div>
+
+</div>
+</script>
+
+<script src="/static/vendor/vue.global.prod.js"></script>
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

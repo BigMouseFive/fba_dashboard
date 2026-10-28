@@ -1,0 +1,16 @@
+[project]
+name = "fba-dashboard"
+version = "0.1.0"
+description = "FBA 订单数据对比看板（局域网共享，按日累计）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "openpyxl>=3.1",
+    "python-multipart>=0.0.9",
+]
+
+[tool.uv]
+# uv 只负责依赖解析与虚拟环境，不用它打包本应用
+package = false

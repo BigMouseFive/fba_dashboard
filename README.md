@@ -50,23 +50,50 @@ http://<本机局域网IP>:8770
 
 ![](docs/screenshot-error-state.png)
 
-## 安装
+## 安装（macOS）
+
+前置：需要 [uv](https://docs.astral.sh/uv/)。没装的话：
 
 ```bash
-cd /Users/wenwendemac/project/home-server/tool/shu_ke/fba_dashboard
+brew install uv
+# 或
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+安装：
+
+```bash
+cd tool/shu_ke/fba_dashboard
 ./install.sh
 ```
 
-脚本会：用 **uv** 建 `.venv` → `uv sync` 装依赖 → 写 `~/Library/LaunchAgents/com.wenwendemac.fba-dashboard.plist`
-→ 立刻启动 → 打印局域网地址。
+脚本做的事：
 
-卸载（保留数据）：
+1. 用 **uv** 创建独立虚拟环境 `.venv`（默认 Python 3.13，uv 会按需自动下载）
+2. `uv sync` 按 `uv.lock` 精确安装依赖，并做一次导入自检
+3. 写入 `~/Library/LaunchAgents/com.wenwendemac.fba-dashboard.plist`
+4. `launchctl bootstrap` 立即启动，轮询健康检查最多 20 秒
+5. 打印本机与局域网访问地址
+
+`RunAtLoad` + `KeepAlive` 都为 `true`，所以**开机自动启动**，进程崩溃也会被 launchd 重新拉起。
+
+### 常用命令
 
 ```bash
-./install.sh --uninstall
+./install.sh --status     # 运行状态 / pid / 健康检查 / 访问地址
+./install.sh --logs       # 实时看日志
+./install.sh --restart    # 重启
+./install.sh --uninstall  # 停止并取消开机自启（保留 data/ 里的数据）
 ```
 
-> 注意：`uv` 默认缓存目录 `~/.cache/uv` 在本机被沙箱限制，脚本里已把 `UV_CACHE_DIR` 指向工作区下的 `.uvcache`。
+### 自定义
+
+```bash
+FBA_PORT=8771 ./install.sh                  # 换端口
+FBA_LABEL=com.me.mydash ./install.sh        # 换服务标识（可多实例共存）
+```
+
+卸载后再装、换端口重装、单日重复导入都不会破坏已有数据（`data/fba.db` 独立于 `.venv`）。
 
 ## 开发
 

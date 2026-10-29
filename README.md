@@ -135,6 +135,33 @@ fba_dashboard/
 如果以后想改成"跨表全量去重"，只需在 `app/ingest.py` 的 `_pick_main_sheet()` 里
 把候选表全部返回并在入库前按 `(订单编号, 店铺名, 平台SKU)` 去重即可。
 
+## 性能设计
+
+切换周期曾经要 0.8～2.5 秒，重构后降到 **13 ms 左右**（P95 < 20 ms）。
+
+| 手段 | 说明 |
+|---|---|
+| 预聚合表 | `agg_daily` 按「日 × 国家 × 店铺 × 运营 × 小时」预先汇总，49,832 行明细压到 11,754 行（4.2 倍），所有图表读它 |
+| 订单数专表 | 订单可跨运营/团队（多 SKU），按维度聚合会被重复计数，因此用 `agg_dim_orders` 分维度、分站点各存一份**精确去重值** |
+| 单连接 | 每个请求只开一个 SQLite 连接，原来 `summary()` 内部建了 13 次连接 |
+| 单接口 | `/api/dashboard` 取代 `/api/summary` + `/api/operators`，切换周期只发 1 个请求 |
+| 两期合并 | 本期/上期用 `CASE WHEN` 一次扫描算出，查询数减半 |
+| gzip | 响应 28,775 → 5,384 字节 |
+| 30 秒缓存 | 来回切周期直接命中，导入后自动失效 |
+| 前端请求守卫 | 快速连点只采纳最后一次响应，避免旧结果覆盖新结果 |
+| 局部遮罩 | 切换时保留旧数据，只叠半透明层和顶部进度条，不再整页闪白 |
+
+预聚合在导入时与明细**同一事务**内重算；某一天被重导只会重算那一天。
+
+```bash
+python -m app.rebuild_agg            # 全量重建
+python -m app.rebuild_agg 2026-10-27 # 只重建某天
+python -m app.rebuild_agg --check    # 校验聚合与明细是否一致
+```
+
+> 说明：订单数在「日」粒度是精确去重且可安全相加（已验证跨日期无重复订单号）；
+> 按运营/团队拆分时因为一单可含多个 SKU，各维度单独去重存表，不做二次相加。
+
 ## 关于图表取舍
 
 数据里有两个维度我验证过但**没有做图**，原因是做了也没有信息量：
@@ -151,8 +178,7 @@ fba_dashboard/
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/meta` | 可选日期、月份、团队、导入日志 |
-| GET | `/api/summary?mode=day&day=2026-10-27` | 总览（KPI / 团队 / 国家 / 走势 / 店铺） |
-| GET | `/api/operators?mode=day&day=…&scope=all` | 运营榜，`scope` = `all` / `both` / `uae` / `ksa` |
+| GET | `/api/dashboard?mode=day&day=2026-10-27&scope=all&team_scope=all` | **看板一次拿全**：KPI / 团队 / 国家 / 走势 / 时段 / 运营榜。`scope` 与 `team_scope` 均为 `all` / `uae` / `ksa` |
 | GET | `/api/operators/{code}/daily` | 单人逐日明细 |
 | GET | `/api/export.csv?kind=operators&mode=day&day=…` | CSV 导出，`kind` = `operators` / `teams` / `daily` / `orders` |
 | POST | `/api/upload/orders` | 上传订单 xlsx |

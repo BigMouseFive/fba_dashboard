@@ -7,10 +7,12 @@ import io
 import os
 import shutil
 import tempfile
+import time
 from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,11 +24,44 @@ STATIC_DIR = BASE_DIR / "static"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 app = FastAPI(title=APP_TITLE, docs_url="/api/docs", openapi_url="/api/openapi.json")
+# 看板响应 JSON 较大，压缩后局域网切换更快
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# 极简 TTL 缓存：来回切换周期时避免重复聚合。导入后自动清空。
+_CACHE: dict[tuple, tuple[float, dict]] = {}
+_CACHE_TTL = 30.0
+
+
+def _cache_get(key: tuple):
+    hit = _CACHE.get(key)
+    if not hit:
+        return None
+    ts, payload = hit
+    if time.time() - ts > _CACHE_TTL:
+        _CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _cache_put(key: tuple, payload: dict) -> None:
+    if len(_CACHE) > 64:
+        _CACHE.clear()
+    _CACHE[key] = (time.time(), payload)
+
+
+def _cache_clear() -> None:
+    _CACHE.clear()
 
 
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    # 预热：首个真实请求不必再付冷启动代价（线程池 / SQLite 页缓存 / 模块导入）
+    try:
+        latest = analytics.latest_date()
+        analytics.dashboard("day", latest.isoformat(), None, None, None)
+    except Exception:  # 预热失败不影响服务启动
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -49,6 +84,7 @@ async def upload_orders(file: UploadFile = File(...)):
     try:
         saved = ingest.save_upload(tmp_path, name)
         result = ingest.import_orders(saved, name)
+        _cache_clear()
     except ingest.ImportError_ as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:  # 解析期异常统一转成可读错误
@@ -70,6 +106,7 @@ async def upload_operators(file: UploadFile = File(...)):
     try:
         saved = ingest.save_upload(tmp_path, name)
         result = ingest.import_operators(saved, name)
+        _cache_clear()
     except ingest.ImportError_ as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -94,30 +131,28 @@ def api_meta():
     return {**analytics.meta(), "today": date.today().isoformat()}
 
 
-@app.get("/api/summary")
-def api_summary(
+@app.get("/api/dashboard")
+def api_dashboard(
     mode: str = Query("day", pattern="^(day|week|month|custom)$"),
     day: str | None = None,
     month: str | None = None,
     start: str | None = None,
     end: str | None = None,
-    team_scope: str = Query("all", pattern="^(all|both|uae|ksa)$"),
+    scope: str = Query("all", pattern="^(all|uae|ksa)$"),
+    team_scope: str = Query("all", pattern="^(all|uae|ksa)$"),
 ):
-    _range_args(mode, day, month, start, end)
-    return analytics.summary(mode, day, month, start, end, team_scope)
+    """看板一次拿全：总览 + 团队 + 时段 + 运营榜。
 
-
-@app.get("/api/operators")
-def api_operators(
-    mode: str = Query("day", pattern="^(day|week|month|custom)$"),
-    day: str | None = None,
-    month: str | None = None,
-    start: str | None = None,
-    end: str | None = None,
-    scope: str = Query("all", pattern="^(all|both|uae|ksa)$"),
-):
+    合并成一个接口后，前端切换周期只发 1 个请求，后端共享同一个数据库连接。
+    """
     _range_args(mode, day, month, start, end)
-    return analytics.operator_board(mode, day, month, start, end, scope)
+    key = (mode, day, month, start, end, scope, team_scope, analytics.latest_date().isoformat())
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    payload = analytics.dashboard(mode, day, month, start, end, scope, team_scope)
+    _cache_put(key, payload)
+    return payload
 
 
 @app.get("/api/operators/{code}/daily")
@@ -147,7 +182,7 @@ def api_export(
         for row in analytics.export_orders(s, e):
             writer.writerow(row)
     elif kind == "teams":
-        board = analytics.summary(mode, day, month, start, end)["by_team"]
+        board = analytics.dashboard(mode, day, month, start, end)["by_team"]
         writer.writerow(["排名", "团队", "今日/区间总量", "上一周期", "环比%", "占比%", "运营人数"])
         for t in board:
             writer.writerow([t["rank"], t["team"], t["qty"], t["prev_qty"],
@@ -155,10 +190,10 @@ def api_export(
                              t["share"], t["operators"]])
     elif kind == "daily":
         writer.writerow(["业务日期", "商品数量", "订单数"])
-        for d in analytics.daily_series(s, e):
+        for d in analytics.dashboard(mode, day, month, start, end)["daily"]:
             writer.writerow([d["biz_date"], d["qty"], d["orders"]])
     else:
-        board = analytics.operator_board(mode, day, month, start, end, "all")
+        board = analytics.dashboard(mode, day, month, start, end)["operators"]
         writer.writerow(["排名", "运营代号", "姓名", "团队", "总量", "阿联酋", "沙特",
                          "上一周期", "环比%", "环比差值", "排名变化"])
         for it in board["items"]:

@@ -897,3 +897,31 @@ body.modal-open { overflow: hidden; }
 .pk-unit { font-size: 11.5px; color: var(--text-3); font-weight: 500; margin-left: 2px; }
 
 .th-tip { color: var(--text-3); font-weight: 400; font-size: 11px; }
+
+/* ---------------- 切换周期时的轻量遮罩 ----------------
+   保留旧数据 + 半透明叠层 + 顶部细进度条，避免整页闪白 */
+.refreshing {
+  position: relative;
+}
+.refreshing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, .55);
+  backdrop-filter: saturate(.6) blur(1px);
+  border-radius: var(--radius);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.refresh-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 2px;
+  z-index: 200;
+  background: linear-gradient(90deg, var(--accent), #7b85f0);
+  box-shadow: 0 0 8px rgba(78, 91, 228, .5);
+  transition: width .25s ease, opacity .3s ease;
+  pointer-events: none;
+}

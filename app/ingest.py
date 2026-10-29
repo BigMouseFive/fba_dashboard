@@ -17,7 +17,7 @@ from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 import zipfile
 
-from .db import DATA_DIR, connect, now_iso
+from .db import DATA_DIR, now_iso, write_conn
 
 UPLOAD_DIR = DATA_DIR / "uploads"
 RECYCLE_DIR = DATA_DIR / "replaced"
@@ -137,6 +137,17 @@ def _norm_country(raw) -> str:
     return str(raw or "UNKNOWN").strip() or "UNKNOWN"
 
 
+def _hour_of(paid_at: str) -> int | None:
+    """从 'YYYY-MM-DD HH:MM:SS' 取小时；格式不对返回 None。"""
+    if len(paid_at) >= 13 and paid_at[10] in " T":
+        try:
+            h = int(paid_at[11:13])
+            return h if 0 <= h <= 23 else None
+        except ValueError:
+            return None
+    return None
+
+
 def _to_qty(value) -> int:
     if value is None or value == "":
         return 0
@@ -224,6 +235,7 @@ def parse_orders_file(path: Path, original_name: str) -> dict:
                     country,
                     shop,
                     paid_at,
+                    _hour_of(paid_at),
                     _to_text(cell("platform_sku")),
                     _to_text(cell("sku")),
                     operator,
@@ -261,15 +273,25 @@ def import_orders(path: Path, original_name: str) -> dict:
     biz_date = parsed["biz_date"]
     ts = now_iso()
 
-    with connect() as conn:
+    with write_conn() as conn:
         # 整日覆盖：避免重复上传同一天造成数据翻倍
         conn.execute("DELETE FROM orders WHERE biz_date = ?", (biz_date,))
         conn.executemany(
             """INSERT INTO orders
-               (biz_date, order_id, trade_id, status, country, shop, paid_at,
+               (biz_date, order_id, trade_id, status, country, shop, paid_at, hour,
                 platform_sku, sku, operator, qty, source_file, imported_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [row + (ts,) for row in parsed["rows"]],
+        )
+        # 同一事务内重算当天预聚合：要么都成功，要么都不生效
+        conn.execute("DELETE FROM agg_daily WHERE biz_date = ?", (biz_date,))
+        conn.execute(
+            """INSERT INTO agg_daily (biz_date, country, shop, operator, hour, qty, orders)
+               SELECT biz_date, country, COALESCE(shop, ''), COALESCE(operator, ''),
+                      COALESCE(hour, -1), SUM(qty), COUNT(DISTINCT order_id)
+               FROM orders WHERE biz_date = ?
+               GROUP BY biz_date, country, shop, operator, hour""",
+            (biz_date,),
         )
         conn.execute(
             """INSERT INTO import_batches
@@ -335,7 +357,7 @@ def parse_operators_file(path: Path) -> list[tuple]:
 def import_operators(path: Path, original_name: str) -> dict:
     rows = parse_operators_file(path)
     ts = now_iso()
-    with connect() as conn:
+    with write_conn() as conn:
         conn.execute("DELETE FROM operators")
         conn.executemany(
             "INSERT INTO operators(code, name, team, supervisor, updated_at) VALUES (?,?,?,?,?)",

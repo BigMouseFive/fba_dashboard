@@ -116,25 +116,30 @@ const App = {
       return p;
     }
 
+    // 请求序号：快速连点切换时，只采纳最后一次响应，避免旧结果覆盖新结果
+    let reqSeq = 0;
+
     async function load() {
+      const seq = ++reqSeq;
       loading.value = true;
       try {
-        const [rs, rb] = await Promise.all([
-          fetch(`/api/summary?${query()}&team_scope=${teamScope.value}`),
-          fetch(`/api/operators?${query()}&scope=${scope.value}`),
-        ]);
-        if (!rs.ok || !rb.ok) {
-          throw new Error(`接口返回 ${rs.status}/${rb.status}`);
-        }
-        const [s, b] = await Promise.all([rs.json(), rb.json()]);
-        summary.value = s;
-        board.value = b;
+        const p = query();
+        p.set('team_scope', teamScope.value);
+        p.set('scope', scope.value);
+        const res = await fetch(`/api/dashboard?${p}`);
+        if (!res.ok) throw new Error(`接口返回 ${res.status}`);
+        const data = await res.json();
+        if (seq !== reqSeq) return;   // 已有更新的请求，丢弃本次结果
+
+        summary.value = data;
+        board.value = data.operators;
         loadError.value = '';
       } catch (e) {
+        if (seq !== reqSeq) return;
         loadError.value = e.message || '未知错误';
         toast('数据加载失败：' + loadError.value, 'err');
       } finally {
-        loading.value = false;
+        if (seq === reqSeq) loading.value = false;
       }
     }
 

@@ -23,6 +23,10 @@
 <!-- ==================== 模板 ==================== -->
 <script type="text/x-template" id="tpl">
 
+<div class="refresh-bar"
+     :style="{ width: loading && summary ? '72%' : (loading ? '30%' : '100%'),
+               opacity: loading ? 1 : 0 }"></div>
+
 <div class="shell">
 
   <!-- 顶栏 -->
@@ -84,7 +88,7 @@
   </section>
 
   <!-- KPI -->
-  <section class="kpis" v-if="summary">
+  <section class="kpis" v-if="summary" :class="{ refreshing: loading }">
     <div class="kpi">
       <div class="label"><icon name="grid" />本期总商品数</div>
       <div class="value">{{ fmt(summary.totals.qty) }}<span class="unit">件</span></div>
@@ -132,7 +136,7 @@
   </section>
 
   <!-- 团队环 + 国家占比条 -->
-  <section class="grid-2" v-if="summary">
+  <section class="grid-2" v-if="summary" :class="{ refreshing: loading }">
     <div class="card">
       <div class="card-head">
         <div class="card-title"><icon name="users" />各团队单量占比</div>
@@ -195,7 +199,7 @@
   </section>
 
   <!-- 团队 PK 表 -->
-  <section class="card" style="margin-top:16px" v-if="summary">
+  <section class="card" style="margin-top:16px" v-if="summary" :class="{ refreshing: loading }">
     <div class="card-head">
       <div class="card-title"><icon name="trophy" />团队整体表现对比 · PK 榜</div>
       <div class="toolbar">
@@ -250,7 +254,7 @@
   </section>
 
   <!-- 运营榜 -->
-  <section class="card" style="margin-top:16px" v-if="board">
+  <section class="card" style="margin-top:16px" v-if="board" :class="{ refreshing: loading }">
     <div class="card-head">
       <div class="card-title"><icon name="users" />运营单量榜</div>
       <div class="toolbar">

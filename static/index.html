@@ -261,37 +261,41 @@
         <div class="seg">
           <button v-for="s in scopes" :key="s.key" :class="{ on: scope === s.key }" @click="scope = s.key">{{ s.label }}</button>
         </div>
-        <input class="search" v-model="keyword" placeholder="搜索代号 / 姓名 / 团队">
+
+        <!-- 团队 → 运营 级联筛选 -->
+        <div class="cascade">
+          <select class="pick" v-model="teamFilter" aria-label="按团队筛选">
+            <option value="">全部团队</option>
+            <option v-for="t in teamOptions" :key="t.name" :value="t.name">
+              {{ t.name }}（{{ fmt(t.qty) }}）
+            </option>
+          </select>
+          <span class="cascade-arrow">›</span>
+          <select class="pick" v-model="opFilter" aria-label="按运营筛选" :disabled="!teamFilter">
+            <option value="">{{ teamFilter ? '该团队全部运营' : '先选团队' }}</option>
+            <option v-for="o in opOptions" :key="o.code" :value="o.code">
+              {{ o.label }}（{{ fmt(o.qty) }}）
+            </option>
+          </select>
+          <button v-if="isFiltered" class="btn btn-ghost btn-xs" @click="resetFilters">清除</button>
+        </div>
+
+        <input class="search" v-model="keyword" placeholder="搜索代号 / 姓名">
         <button class="btn btn-ghost" @click="exportCsv('operators')"><icon name="download" />导出</button>
       </div>
     </div>
 
     <div class="card-body">
-      <!-- 前三名 -->
-      <div class="podium" v-if="podium.length === 3">
-        <div class="podium-card gold">
-          <div class="crown">第 1 名</div>
-          <div class="who">{{ podium[0].code }}</div>
-          <div class="team">{{ podium[0].name }} · {{ podium[0].team }}</div>
-          <div class="qty">{{ fmt(podium[0].qty) }}</div>
+      <!-- 前三名：筛选后不足 3 人时自适应（1~2 人也展示，不整块消失） -->
+      <div class="podium" v-if="podium.length" :class="'podium-' + podium.length">
+        <div v-for="(p, i) in podium" :key="p.code"
+             :class="['podium-card', ['gold','silver','bronze'][i]]">
+          <div class="crown" v-if="i === 0">第 1 名</div>
+          <div class="who">{{ p.code }}</div>
+          <div class="team">{{ p.name }} · {{ p.team }}</div>
+          <div class="qty">{{ fmt(p.qty) }}</div>
           <div class="meta">
-            <span>UAE {{ fmt(podium[0].uae) }}</span><span>KSA {{ fmt(podium[0].ksa) }}</span>
-          </div>
-        </div>
-        <div class="podium-card silver">
-          <div class="who">{{ podium[1].code }}</div>
-          <div class="team">{{ podium[1].name }} · {{ podium[1].team }}</div>
-          <div class="qty">{{ fmt(podium[1].qty) }}</div>
-          <div class="meta">
-            <span>UAE {{ fmt(podium[1].uae) }}</span><span>KSA {{ fmt(podium[1].ksa) }}</span>
-          </div>
-        </div>
-        <div class="podium-card bronze">
-          <div class="who">{{ podium[2].code }}</div>
-          <div class="team">{{ podium[2].name }} · {{ podium[2].team }}</div>
-          <div class="qty">{{ fmt(podium[2].qty) }}</div>
-          <div class="meta">
-            <span>UAE {{ fmt(podium[2].uae) }}</span><span>KSA {{ fmt(podium[2].ksa) }}</span>
+            <span>UAE {{ fmt(p.uae) }}</span><span>KSA {{ fmt(p.ksa) }}</span>
           </div>
         </div>
       </div>
@@ -324,7 +328,7 @@
           <tr v-for="it in filteredOps" :key="it.code" :class="{ 'row-anomaly': it.is_anomaly }" @click="openDetail(it)">
             <td>
               <div style="display:flex;align-items:center;gap:6px">
-                <span :class="['rank-badge', it.rank <= 3 ? rankClass(it.rank - 1) : '']">{{ it.rank }}</span>
+                <span :class="['rank-badge', it.viewRank <= 3 ? rankClass(it.viewRank - 1) : '']">{{ it.viewRank }}</span>
                 <span v-if="it.rank_prev == null" class="rank-move flat">new</span>
                 <span v-else-if="it.rank_delta > 0" class="rank-move up">▲{{ it.rank_delta }}</span>
                 <span v-else-if="it.rank_delta < 0" class="rank-move down">▼{{ -it.rank_delta }}</span>
@@ -368,7 +372,11 @@
       </table>
 
       <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:14px;border-top:1px solid var(--line-soft)">
-        <span class="hint" v-if="hiddenCount">还有 {{ hiddenCount }} 位运营未显示</span>
+        <span class="hint" v-if="isFiltered">
+          筛选后 {{ filterSummary.count }} 人 · {{ fmt(filterSummary.qty) }} 件
+          （阿联酋 {{ fmt(filterSummary.uae) }} / 沙特 {{ fmt(filterSummary.ksa) }}）
+        </span>
+        <span class="hint" v-else-if="hiddenCount">还有 {{ hiddenCount }} 位运营未显示</span>
         <span class="hint" v-else>已显示全部 {{ allFiltered.length }} 位运营</span>
         <button class="btn" v-if="hiddenCount" @click="showAllOps = true">展开全部</button>
         <button class="btn" v-else-if="allFiltered.length > pageSize" @click="showAllOps = false">收起</button>

@@ -244,22 +244,89 @@ const App = {
     const teams = computed(() => summary.value?.by_team || []);
     const countries = computed(() => summary.value?.by_country || []);
     const ops = computed(() => board.value?.items || []);
-    const top10 = computed(() => ops.value.slice(0, 10));
+
+    /* ---------- 团队 / 运营 级联筛选 ---------- */
+    const teamFilter = ref('');     // '' = 全部团队
+    const opFilter = ref('');       // '' = 该团队下全部运营
+
+    // 团队下拉：只列出当前口径下真正有单量的团队，按件数排序
+    const teamOptions = computed(() => {
+      const seen = new Map();
+      for (const o of ops.value) {
+        if (!seen.has(o.team)) seen.set(o.team, 0);
+        seen.set(o.team, seen.get(o.team) + o.qty);
+      }
+      return [...seen.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, qty]) => ({ name, qty }));
+    });
+
+    // 运营下拉：随团队变化（级联核心），未选团队时列出全部运营
+    const opOptions = computed(() => {
+      const list = teamFilter.value
+        ? ops.value.filter((o) => o.team === teamFilter.value)
+        : ops.value;
+      return list.map((o) => ({
+        code: o.code,
+        label: o.name && o.name !== o.code ? `${o.code} ${o.name}` : o.code,
+        team: o.team,
+        qty: o.qty,
+      }));
+    });
+
+    // 团队变化时清空运营选择，避免留下不属于该团队的运营
+    watch(teamFilter, () => {
+      if (opFilter.value && !opOptions.value.some((o) => o.code === opFilter.value)) {
+        opFilter.value = '';
+      }
+      showAllOps.value = false;
+    });
+
+    // 先按团队/运营过滤，再叠加关键词搜索
+    const allFiltered = computed(() => {
+      let list = ops.value;
+      if (teamFilter.value) list = list.filter((o) => o.team === teamFilter.value);
+      if (opFilter.value) list = list.filter((o) => o.code === opFilter.value);
+
+      const k = keyword.value.trim().toUpperCase();
+      if (k) {
+        const raw = keyword.value.trim();
+        list = list.filter((o) =>
+          o.code.toUpperCase().includes(k) || (o.name || '').includes(raw) ||
+          (o.team || '').includes(raw));
+      }
+      // 过滤后重新编号，避免名次跳号（1、3、7…）
+      return list.map((o, i) => ({ ...o, viewRank: i + 1 }));
+    });
+
+    // 前三名领奖台与 Top10 图都跟随筛选结果
+    const filteredOps = computed(() =>
+      showAllOps.value ? allFiltered.value : allFiltered.value.slice(0, pageSize.value));
+    const hiddenCount = computed(() => Math.max(0, allFiltered.value.length - filteredOps.value.length));
+    const podium = computed(() => allFiltered.value.slice(0, 3));
+    const top10 = computed(() => allFiltered.value.slice(0, 10));
+
+    // 筛选后的小计，便于确认筛选生效
+    const filterSummary = computed(() => {
+      const list = allFiltered.value;
+      const qty = list.reduce((a, o) => a + o.qty, 0);
+      const uae = list.reduce((a, o) => a + o.uae, 0);
+      const ksa = list.reduce((a, o) => a + o.ksa, 0);
+      return { count: list.length, qty, uae, ksa };
+    });
+
+    const isFiltered = computed(() => !!(teamFilter.value || opFilter.value || keyword.value.trim()));
+
+    function resetFilters() {
+      teamFilter.value = '';
+      opFilter.value = '';
+      keyword.value = '';
+    }
 
     // 表格分页：默认只露出前 N 名，避免首页被 74 行淹没
     const pageSize = ref(15);
     const showAllOps = ref(false);
-    const allFiltered = computed(() => {
-      const k = keyword.value.trim().toUpperCase();
-      if (!k) return ops.value;
-      return ops.value.filter((o) =>
-        o.code.toUpperCase().includes(k) || (o.name || '').includes(keyword.value.trim()) ||
-        (o.team || '').includes(keyword.value.trim()));
-    });
-    const filteredOps = computed(() =>
-      showAllOps.value ? allFiltered.value : allFiltered.value.slice(0, pageSize.value));
-    const hiddenCount = computed(() => Math.max(0, allFiltered.value.length - filteredOps.value.length));
-    watch([keyword, scope], () => { showAllOps.value = false; });
+    watch([keyword, scope, teamFilter, opFilter], () => { showAllOps.value = false; });
 
     /* ---------- 24 小时时段热力 ---------- */
     const hourChart = computed(() => {
@@ -535,13 +602,13 @@ const App = {
 
     /* ---------- 视图辅助 ---------- */
     function rankClass(i) { return ['r1', 'r2', 'r3'][i] || ''; }
-    const podium = computed(() => top10.value.slice(0, 3));
 
     return {
       meta, mode, day, month, start, end, scope, loading, summary, board,
       toasts, uploading, dragging, showImport, keyword, detail, loadError,
       modes, scopes, teamScopes, teamScope, teamScopeLabel, rangeLabel, teams, countries, ops, top10, filteredOps, podium,
       allFiltered, showAllOps, hiddenCount, pageSize,
+      teamFilter, opFilter, teamOptions, opOptions, isFiltered, filterSummary, resetFilters,
       teamChart, dailyChart, topChart, hourChart,
       teamMetric, teamRank,
       fmt, fmtSigned, pctText, trimTime, rankClass, exportCsv, openDetail, closeDetail,

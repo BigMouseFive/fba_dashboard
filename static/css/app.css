@@ -925,3 +925,62 @@ body.modal-open { overflow: hidden; }
   transition: width .25s ease, opacity .3s ease;
   pointer-events: none;
 }
+
+/* ---------------- 团队 → 运营 级联筛选 ---------------- */
+.cascade {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  background: #f6f7fb;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.pick {
+  height: 28px;
+  max-width: 210px;
+  min-width: 132px;
+  padding: 0 24px 0 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background-color: #fff;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238d94a6' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  background-size: 12px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  text-overflow: ellipsis;
+}
+
+.pick:hover { border-color: #d6dae6; }
+.pick:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(78, 91, 228, .12); }
+.pick:disabled {
+  background-color: #f1f2f7;
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.cascade-arrow { color: var(--text-3); font-size: 13px; line-height: 1; }
+
+.btn-xs {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.btn-xs:hover { color: var(--text); }
+
+@media (max-width: 1100px) {
+  .cascade { flex-wrap: wrap; }
+  .pick { max-width: 140px; }
+}
+
+/* 领奖台自适应：筛选后只剩 1~2 人时不拉伸满宽 */
+.podium-1 { grid-template-columns: minmax(0, 340px); justify-content: center; }
+.podium-2 { grid-template-columns: repeat(2, minmax(0, 340px)); justify-content: center; }
